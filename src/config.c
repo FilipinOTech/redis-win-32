@@ -30,6 +30,9 @@
 
 
 #include "redis.h"
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 /*-----------------------------------------------------------------------------
  * Config file parsing
@@ -59,7 +62,7 @@ void loadServerConfigFromString(char *config) {
     int linenum = 0, totlines, i;
     sds *lines;
 
-    lines = sdssplitlen(config,strlen(config),"\n",1,&totlines);
+    lines = sdssplitlen(config,(int)strlen(config),"\n",1,&totlines);
 
     for (i = 0; i < totlines; i++) {
         sds *argv;
@@ -137,6 +140,9 @@ void loadServerConfigFromString(char *config) {
                 err = "Invalid log level. Must be one of debug, notice, warning";
                 goto loaderr;
             }
+#ifdef _WIN32
+            setLogVerbosityLevel(server.verbosity);
+#endif
         } else if (!strcasecmp(argv[0],"logfile") && argc == 2) {
             FILE *logfp;
 
@@ -154,6 +160,9 @@ void loadServerConfigFromString(char *config) {
                         "Can't open the log file: %s", strerror(errno));
                     goto loaderr;
                 }
+                else {
+                    setLogFile( server.logfile );
+                }
                 fclose(logfp);
             }
         } else if (!strcasecmp(argv[0],"syslog-enabled") && argc == 2) {
@@ -164,6 +173,11 @@ void loadServerConfigFromString(char *config) {
             if (server.syslog_ident) zfree(server.syslog_ident);
             server.syslog_ident = zstrdup(argv[1]);
         } else if (!strcasecmp(argv[0],"syslog-facility") && argc == 2) {
+#ifdef _WIN32
+            // Skip error - just ignore Syslog
+            // err "Syslog is not supported on Windows platform.";
+            // goto loaderr;
+#else
             struct {
                 const char     *name;
                 const int       value;
@@ -192,6 +206,7 @@ void loadServerConfigFromString(char *config) {
                 err = "Invalid log facility. Must be one of USER or between LOCAL0-LOCAL7";
                 goto loaderr;
             }
+#endif
         } else if (!strcasecmp(argv[0],"databases") && argc == 2) {
             server.dbnum = atoi(argv[1]);
             if (server.dbnum < 1) {
@@ -418,7 +433,12 @@ void loadServerConfigFromString(char *config) {
                     goto loaderr;
                 }
             }
-        } else {
+#ifdef _WIN32
+		} else if (!strcasecmp(argv[0],"maxheap")) {
+			// ignore. This is taken care of in the qfork code.
+						
+#endif
+		} else {
             err = "Bad directive or wrong number of arguments"; goto loaderr;
         }
         sdsfreesplitres(argv,argc);
@@ -452,10 +472,21 @@ void loadServerConfig(char *filename, char *options) {
         if (filename[0] == '-' && filename[1] == '\0') {
             fp = stdin;
         } else {
+#ifdef _WIN32
+            if ((fp = fopen(filename,"rb")) == NULL) {
+#else
             if ((fp = fopen(filename,"r")) == NULL) {
+#endif
                 redisLog(REDIS_WARNING,
                     "Fatal error, can't open config file '%s'", filename);
                 exit(1);
+            }
+        }
+
+        if (fread(buf, 1, 3, fp) == 3) {
+            /* if BOM for UTF-8 skip over it, else seek to 0 */
+            if (buf[0] != (char)0xEF || buf[1] != (char)0xBB || buf[2] != (char)0xBF) {
+                fseek(fp, 0, SEEK_SET);
             }
         }
         while(fgets(buf,REDIS_CONFIGLINE_MAX+1,fp) != NULL)
@@ -577,7 +608,7 @@ void configSetCommand(redisClient *c) {
         server.aof_rewrite_incremental_fsync = yn;
     } else if (!strcasecmp(c->argv[2]->ptr,"save")) {
         int vlen, j;
-        sds *v = sdssplitlen(o->ptr,sdslen(o->ptr)," ",1,&vlen);
+        sds *v = sdssplitlen(o->ptr,(int)sdslen(o->ptr)," ",1,&vlen);
 
         /* Perform sanity check before setting the new config:
          * - Even number of args
@@ -666,9 +697,10 @@ void configSetCommand(redisClient *c) {
         } else {
             goto badfmt;
         }
+        setLogVerbosityLevel(server.verbosity);
     } else if (!strcasecmp(c->argv[2]->ptr,"client-output-buffer-limit")) {
         int vlen, j;
-        sds *v = sdssplitlen(o->ptr,sdslen(o->ptr)," ",1,&vlen);
+        sds *v = sdssplitlen(o->ptr,(int)sdslen(o->ptr)," ",1,&vlen);
 
         /* We need a multiple of 4: <class> <hard> <soft> <soft_seconds> */
         if (vlen % 4) {
@@ -726,7 +758,7 @@ void configSetCommand(redisClient *c) {
     } else if (!strcasecmp(c->argv[2]->ptr,"watchdog-period")) {
         if (getLongLongFromObject(o,&ll) == REDIS_ERR || ll < 0) goto badfmt;
         if (ll)
-            enableWatchdog(ll);
+            enableWatchdog((int)ll);
         else
             disableWatchdog();
     } else if (!strcasecmp(c->argv[2]->ptr,"rdbcompression")) {
